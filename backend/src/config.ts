@@ -117,7 +117,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ragApiUrl: str(env.RAG_API_URL) ?? "http://127.0.0.1:8000",
     ragApiKey: str(env.RAG_API_KEY),
     adminUsername: str(env.ADMIN_USERNAME) ?? "admin",
-    adminDataDir: str(env.ADMIN_DATA_DIR) ?? "/var/lib/rag-console",
+    adminDataDir: str(env.ADMIN_DATA_DIR) ?? "/app/data",
     uploadMaxBytes: int(env.UPLOAD_MAX_BYTES, 10 * 1024 * 1024),
     uploadMaxBatch: int(env.UPLOAD_MAX_BATCH, 5),
     uploadMaxText: int(env.UPLOAD_MAX_TEXT, 2 * 1024 * 1024),

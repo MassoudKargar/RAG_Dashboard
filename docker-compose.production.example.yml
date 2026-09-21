@@ -26,7 +26,7 @@ services:
     tmpfs:
       - /tmp
     volumes:
-      - rag_dash_data:/var/lib/rag-console
+      - rag_dash_data:/app/data
       # read-only real benchmark artifacts (files mode)
       - /srv/rag/docs:/app/benchmark-results:ro
     security_opt:

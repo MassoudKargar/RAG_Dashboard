@@ -2,9 +2,12 @@
 # The only allowed entries are documented false positives: metric-key field
 # names in the dashboard code (e.g. `key: "tokensUsed"`, `key: "estimatedCost"`,
 # `m.key === "latencyP95Ms"`). They are NOT secrets.
-[allowlist]
-  description = "dashboard metric key identifiers (false positives)"
-  files = [
-    "frontend/src/lib/metrics\\.ts",
-    "tests/unit/compare\\.test\\.ts",
-  ]
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "dashboard metric key identifiers (false positives)"
+paths = [
+  '''frontend/src/lib/metrics\.ts''',
+  '''tests/unit/compare\.test\.ts''',
+]

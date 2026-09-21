@@ -29,7 +29,8 @@ COPY sample-data /app/sample-data
 
 # Sample data is read-only at runtime.
 RUN adduser -D -u 10001 appuser \
-  && chown -R appuser:appuser /app
+  && mkdir -p /app/data \
+  && chown -R appuser:appuser /app /app/data
 
 USER appuser
 

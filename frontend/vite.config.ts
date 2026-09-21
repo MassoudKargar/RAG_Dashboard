@@ -1,5 +1,10 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// Repo root, resolved relative to this config so the repository works from any clone path.
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export default defineConfig({
   plugins: [react()],
@@ -31,7 +36,7 @@ export default defineConfig({
     },
   },
   test: {
-    root: "/opt/rag-benchmark-dashboard",
+    root: repoRoot,
     environment: "node",
     include: ["tests/unit/compare.test.ts", "frontend/src/**/*.test.ts"],
   },

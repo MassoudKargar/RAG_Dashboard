@@ -24,6 +24,7 @@ export default defineConfig({
       DASHBOARD_PORT: "4180",
       ENABLE_DEMO_MODE: "true",
       LOG_LEVEL: "warn",
+      ADMIN_DATA_DIR: "/tmp/rag-console-e2e",
     },
   },
   projects: [

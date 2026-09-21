@@ -55,7 +55,12 @@ async function boot(
   const sample = path.join(tmpdir, "sample.json");
   fs.writeFileSync(sample, "[]");
 
+  // Isolate console state (auth/users/audit) from host directories so the
+  // suite runs as any user in CI (where /app/data is not writable).
+  const adminTmp = fs.mkdtempSync(path.join(os.tmpdir(), "rdash-admin-"));
   const full: Record<string, string> = {
+    ADMIN_DATA_DIR: adminTmp,
+
     RAG_BENCHMARK_API_URL: "http://upstream.test",
     RAG_BENCHMARK_API_PATH: "/benchmark-runs",
     RAG_BENCHMARK_API_AUTH_MODE: "none",

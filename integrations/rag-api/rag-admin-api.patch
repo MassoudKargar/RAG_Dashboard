@@ -1,0 +1,366 @@
+From 348d64ea32af884f7b0685c5e33f174b2f0df7bc Mon Sep 17 00:00:00 2001
+From: masoud laptop <massoudkargar@outlook.com>
+Date: Mon, 21 Sep 2026 16:54:31 +0000
+Subject: [PATCH 1/2] feat: add authenticated internal RAG admin endpoints
+
+---
+ app/main.py                |   3 +-
+ app/routes/admin_routes.py | 132 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 134 insertions(+), 1 deletion(-)
+ create mode 100644 app/routes/admin_routes.py
+
+diff --git a/app/main.py b/app/main.py
+index 85d0e6d..c2fcdd3 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -1,5 +1,5 @@
+ from fastapi import FastAPI, Depends, Header, HTTPException
+-from app.routes import vector_db, chat
++from app.routes import vector_db, chat, admin_routes
+ from app.services.analysis_service import get_analysis_service, SmartAnalysisService
+ from app.services.providers.mcp_service import get_mcp_provider, MCPProvider
+ import logging
+@@ -58,6 +58,7 @@ async def startup_event():
+ # Include routers with tags
+ app.include_router(vector_db.router, prefix="/v1/vector_db", tags=["Vector Database"])
+ app.include_router(chat.router, prefix="/v1", tags=["Chat"])
++app.include_router(admin_routes.router)
+ 
+ 
+ @app.get("/", tags=["Root"])
+diff --git a/app/routes/admin_routes.py b/app/routes/admin_routes.py
+new file mode 100644
+index 0000000..89c9230
+--- /dev/null
++++ b/app/routes/admin_routes.py
+@@ -0,0 +1,132 @@
++"""Internal administration API for the RAG service.
++
++Added for the RAG Administration Console. Reuses ONLY existing production code
++(rag_service / vector_store / chunker) — no duplicated ingestion logic. Every
++endpoint is protected by the global X-API-Key dependency (fail-closed) and bound
++to localhost (rag-api.service listens on 127.0.0.1:8000 by design).
++"""
++from typing import Any, Dict, List, Optional
++from fastapi import APIRouter, HTTPException
++from app.services.core.rag_service import rag_service
++
++router = APIRouter(prefix="/v1/vector_db/admin", tags=["Internal Admin"])
++
++
++def _collection() -> Any:
++    return rag_service.vector_store.get_or_create_collection(rag_service.collection_name)
++
++
++@router.get("/collections")
++async def list_collections():
++    """List collections and basic sizing (read-only)."""
++    try:
++        names = [c.name for c in rag_service.vector_store.client.list_collections()]
++        return {"collections": names}
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
++
++
++@router.get("/stats")
++async def collection_stats():
++    """Aggregate storage statistics for the active collection (read-only)."""
++    try:
++        collection = _collection()
++        count = collection.count()
++        # Distinct documents: group chunk metadata by document_id
++        seen = {}
++        # Chroma pages in batches of 1000
++        ids = collection.get(include=["metadatas"])["ids"]
++        metas = collection.get(include=["metadatas"])["metadatas"]
++        docs: Dict[str, Dict[str, Any]] = {}
++        total_chunks = 0
++        for cid, meta in zip(ids, metas):
++            total_chunks += 1
++            did = (meta or {}).get("document_id") or "unknown"
++            entry = docs.setdefault(did, {"document_id": did, "chunks": 0})
++            entry["chunks"] += 1
++            if meta and "source" in meta:
++                entry.setdefault("source", str(meta.get("source")))
++        return {
++            "collection": rag_service.collection_name,
++            "total_chunks": total_chunks,
++            "total_documents": len(docs),
++            "embedding_model": rag_service.embedding_provider.__class__.__name__,
++            "embedding_provider": getattr(rag_service, "_embedding_provider", None) and "local" or "see-config",
++        }
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=f"Failed to read collection stats: {str(e)}")
++
++
++@router.get("/documents")
++async def list_documents(prefix: Optional[str] = None, limit: int = 500, offset: int = 0):
++    """Paginated distinct document list with chunk counts (read-only)."""
++    try:
++        collection = _collection()
++        res = collection.get(include=["metadatas", "documents"])
++        ids = res["ids"]
++        metas = res["metadatas"] if res["metadatas"] else [{}] * len(ids)
++        docs: Dict[str, Dict[str, Any]] = {}
++        for cid, meta in zip(ids, metas):
++            meta = meta or {}
++            did = str(meta.get("document_id") or cid.parse_id() if hasattr(cid, "parse_id") else (meta.get("document_id") or str(cid)))
++            if prefix and did and did.startswith(prefix) is False:
++                continue
++            entry = docs.setdefault(did, {"document_id": did, "chunks": 0, "first_chunk_id": cid})
++            entry["chunks"] += 1
++            for k in ("source", "filename", "checksum", "mime", "version", "corpus", "fiscal_year"):
++                if meta.get(k) is not None and k not in entry:
++                    entry[k] = meta.get(k)
++        items = list(docs.values())
++        items.sort(key=lambda d: d["document_id"])
++        return {"total": len(items), "limit": limit, "offset": offset, "documents": items[offset:offset + limit]}
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
++
++
++@router.get("/documents/{document_id}/chunks")
++async def document_chunks(document_id: str, limit: int = 1000, offset: int = 0):
++    """Chunk inspector: all chunks of one document (read-only)."""
++    try:
++        collection = _collection()
++        res = collection.get(
++            where={"document_id": document_id},
++            include=["documents", "metadatas", "embeddings"],
++        )
++        ids = res["ids"]
++        docs = (res["documents"] or []) if res["documents"] else [None] * len(ids)
++        metas = res["metadatas"] if res["metadatas"] else [{}] * len(ids)
++        chunks = []
++        for cid, doc, meta in zip(ids, docs, metas):
++            chunks.append({
++                "chunk_id": cid,
++                "document_id": document_id,
++                "chunk_index": (meta or {}).get("chunk_index"),
++                "source": (meta or {}).get("source"),
++                "section": (meta or {}).get("section"),
++                "page": (meta or {}).get("page"),
++                "total_chunks": (meta or {}).get("total_chunks"),
++                "char_count": len(doc) if isinstance(doc, str) else 0,
++                "text": doc if isinstance(doc, str) else None,
++                "metadata": meta,
++                "has_embedding": bool((meta or {}).get("embedding") or False) or True,
++            })
++        chunks.sort(key=lambda c: (c["chunk_index"] is None, c["chunk_index"] or 0))
++        return {
++            "document_id": document_id,
++            "total_chunks": len(chunks),
++            "chunks": chunks[offset:offset + limit],
++        }
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=f"Failed to read chunks: {str(e)}")
++
++
++@router.delete("/documents/{document_id}")
++async def delete_document(document_id: str):
++    """Delete ONLY the given document's vectors (targeted, safe)."""
++    try:
++        deleted = rag_service.vector_store.delete_documents(
++            rag_service.collection_name, {"document_id": document_id}
++        )
++        return {"document_id": document_id, "deleted": deleted, "message": "Document vectors removed"}
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+\ No newline at end of file
+-- 
+2.53.0
+
+
+From e35e5419204ea7a8fb15bc1e383b72a4101e2049 Mon Sep 17 00:00:00 2001
+From: masoud laptop <massoudkargar@outlook.com>
+Date: Mon, 21 Sep 2026 16:54:31 +0000
+Subject: [PATCH 2/2] fix: safely handle empty Chroma search documents
+
+---
+ app/routes/vector_db.py            | 57 +++++++++++++++---
+ tests/test_search_normalization.py | 97 ++++++++++++++++++++++++++++++
+ 2 files changed, 145 insertions(+), 9 deletions(-)
+ create mode 100644 tests/test_search_normalization.py
+
+diff --git a/app/routes/vector_db.py b/app/routes/vector_db.py
+index de060c0..1ce0b5f 100644
+--- a/app/routes/vector_db.py
++++ b/app/routes/vector_db.py
+@@ -7,6 +7,46 @@ from typing import List, Optional
+ router = APIRouter()
+ 
+ 
++def normalize_search_results(
++    ids: Optional[List[str]],
++    documents: Optional[List[Optional[str]]],
++    metadatas: Optional[List[Optional[dict]]],
++    distances: Optional[List[Optional[float]]],
++) -> List[SearchResult]:
++    """Build validated SearchResult objects from raw Chroma rows.
++
++    Chroma can return null/empty document entries for edge-case queries (for
++    example short or hyphenated identifiers). Those must never fail response
++    validation, never be converted into the literal string "None", and must
++    never be returned as chunks. Invalid entries are skipped while the
++    remaining valid entries keep their original index alignment, so mixed
++    results still return the valid ones. An all-invalid response is an empty
++    list (HTTP 200).
++    """
++    ids = ids or []
++    documents = documents or []
++    metadatas = metadatas or []
++    distances = distances or []
++    out: List[SearchResult] = []
++    for i in range(len(ids)):
++        text = documents[i] if i < len(documents) else None
++        meta = metadatas[i] if i < len(metadatas) else None
++        dist = distances[i] if i < len(distances) else None
++        # Skip null, non-string and whitespace-only chunks entirely.
++        if not isinstance(text, str) or not text.strip():
++            continue
++        out.append(SearchResult(id=i, text=text, metadata=meta, score=dist))
++    return out
++
++
++def _first_column(results: dict, key: str) -> list:
++    """Return the first result-column for a Chroma key, or [] when absent."""
++    col = results.get(key) or []
++    if col:
++        col = col[0] if isinstance(col[0], list) else col
++    return col or []
++
++
+ # this route is used to initialize the collection in the vector database, you need to call it before you can use the other routes
+ @router.post("/initialize_collection", status_code=201)
+ async def initialize_collection():
+@@ -71,15 +111,14 @@ async def search_documents(query: Query, limit: Optional[int] = None):
+             embedding, limit=limit, query=query.prompt,
+             where=rag_service.year_filter(query.prompt)
+         )
+-        search_results = []
+-        for i in range(len(results['ids'][0])):
+-            search_results.append(SearchResult(
+-                id=i,  # Using index as id instead of the UUID
+-                text=results['documents'][0][i],
+-                metadata=results['metadatas'][0][i],
+-                score=results['distances'][0][i] if results.get('distances') else None
+-            ))
+-        return search_results
++        return normalize_search_results(
++            ids=_first_column(results, "ids"),
++            documents=_first_column(results, "documents"),
++            metadatas=_first_column(results, "metadatas"),
++            distances=_first_column(results, "distances"),
++        )
++    except HTTPException:
++        raise
+     except Exception as e:
+         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+ 
+diff --git a/tests/test_search_normalization.py b/tests/test_search_normalization.py
+new file mode 100644
+index 0000000..94bf438
+--- /dev/null
++++ b/tests/test_search_normalization.py
+@@ -0,0 +1,97 @@
++"""Regression tests for safe normalization of Chroma search results.
++
++The public /v1/vector_db/search_documents endpoint must never fail validation
++when Chroma returns null/empty document entries (e.g. short or hyphenated
++queries). Invalid entries are skipped while preserving index alignment;
++all-invalid responses are HTTP 200 with an empty list.
++"""
++import pytest
++from app.routes.vector_db import normalize_search_results
++
++
++def _ids(n):
++    return [f"chunk_{i:05d}" for i in range(n)]
++
++
++def test_short_query_returns_empty_when_all_null():
++    out = normalize_search_results(ids=_ids(2), documents=[None, None], metadatas=[{}, {}], distances=[0.1, 0.2])
++    assert out == []
++
++
++def test_hyphenated_query_null_mixed_with_valid():
++    out = normalize_search_results(
++        ids=_ids(3), documents=[None, "valid chunk text A", "valid chunk text B"],
++        metadatas=[{}, {"document_id": "d1"}, {"document_id": "d2"}],
++        distances=[0.1, 0.2, 0.3],
++    )
++    assert len(out) == 2
++    assert out[0].id == 1 and out[0].text == "valid chunk text A"
++    assert out[1].id == 2 and out[1].text == "valid chunk text B"
++
++
++def test_zenith_abc_query():
++    """ZENITH-abc style marker queries caused text=None 502s before the fix."""
++    out = normalize_search_results(ids=_ids(1), documents=[None], metadatas=[{}], distances=[0.4])
++    assert out == []
++
++
++def test_full_marker_phrase_returns_valid():
++    out = normalize_search_results(
++        ids=_ids(1), documents=["the unique phrase ZENITH-9c1df9ba appears here"],
++        metadatas=[{"document_id": "d1", "source": "z.txt"}], distances=[0.05],
++    )
++    assert len(out) == 1
++    assert "ZENITH-9c1df9ba" in out[0].text
++    assert out[0].metadata["document_id"] == "d1"
++
++
++def test_empty_string_mixed_with_valid():
++    out = normalize_search_results(
++        ids=_ids(2), documents=["", "real text"], metadatas=[{}, {"document_id": "d"}], distances=[0.1, 0.2]
++    )
++    assert len(out) == 1 and out[0].text == "real text"
++
++
++def test_missing_metadata_kept():
++    out = normalize_search_results(ids=_ids(1), documents=["text"], metadatas=[None], distances=[0.1])
++    assert len(out) == 1 and out[0].metadata is None
++
++
++def test_all_null_response_empty():
++    out = normalize_search_results(ids=_ids(3), documents=[None, None, None], metadatas=[None, None, None], distances=[0.1, 0.2, 0.3])
++    assert out == []
++
++
++def test_no_result_response_empty():
++    out = normalize_search_results(ids=[], documents=[], metadatas=[], distances=[])
++    assert out == []
++
++
++def test_missing_distances_column():
++    out = normalize_search_results(ids=_ids(1), documents=["text"], metadatas=[{"document_id": "d"}], distances=None)
++    assert len(out) == 1 and out[0].score is None
++
++
++def test_missing_columns():
++    out = normalize_search_results(ids=None, documents=None, metadatas=None, distances=None)
++    assert out == []
++
++
++def test_existing_production_query_shape():
++    ids = _ids(2)
++    docs = [
++        "years: (In millions, except percentages and per share amounts) 2024 2023 Percent",
++        "Microsoft net income fiscal year 2024",
++    ]
++    metas = [{"document_id": "microsoft-10k-2024", "fiscal_year": 2024}, {"document_id": "microsoft-10k-2024", "fiscal_year": 2024}]
++    dists = [0.18, 0.34]
++    out = normalize_search_results(ids=ids, documents=docs, metadatas=metas, distances=dists)
++    assert len(out) == 2
++    assert out[0].score == 0.18 and out[1].score == 0.34
++    assert out[0].metadata["fiscal_year"] == 2024
++
++
++def test_never_converts_none_to_string():
++    out = normalize_search_results(ids=_ids(1), documents=[None], metadatas=[{}], distances=[0.9])
++    # The literal string "None" must never appear as a chunk.
++    assert all(o.text != "None" for o in out)
+\ No newline at end of file
+-- 
+2.53.0
+

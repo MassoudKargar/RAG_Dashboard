@@ -1,0 +1,45 @@
+# ---- Secrets / environments ----
+.env
+.env.*
+!.env.example
+
+# ---- Runtime state (never commit) ----
+data/
+uploads/
+logs/
+backups/
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Credentials / certificates ----
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.htpasswd
+.admin-password
+*password*
+*secret*
+
+# ---- Tooling artifacts ----
+node_modules/
+graft/
+.ignore
+dist/
+build/
+coverage/
+.playwright/
+test-results/
+playwright-report/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.log
+*.tsbuildinfo
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db

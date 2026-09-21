@@ -1,0 +1,19 @@
+# Everything not explicitly needed at runtime is excluded from the image build context.
+node_modules
+**/node_modules
+.git
+.gitignore
+*.log
+.env
+.env.*
+!.env.example
+frontend/dist
+backend/dist
+tests
+graft
+DREAM*
+MEMORY.md
+USER.md
+SOUL.md
+IDENTITY.md
+README.md

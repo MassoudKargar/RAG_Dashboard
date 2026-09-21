@@ -1,0 +1,48 @@
+# Public-safe example deployment.
+# Defaults: binds 127.0.0.1:4173 only, non-root, hardened, no host networking.
+# This file advertises NO credentials — copy .env.example to .env first.
+
+services:
+  rag-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-dashboard:local
+    container_name: rag-dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4173:4173"
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_HOST: "0.0.0.0" # inside container; exposure controlled by the bind above
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - rag_dash_data:/var/lib/rag-console
+      # optional: read-only benchmark artifacts (files mode)
+      # - ./benchmark-results:/app/benchmark-results:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4173/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  rag_dash_data:

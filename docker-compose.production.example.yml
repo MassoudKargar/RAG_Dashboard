@@ -1,0 +1,49 @@
+# Production-topology EXAMPLE: the dashboard must reach a RAG service that
+# binds host-local ports (127.0.0.1:8000 RAG API, 127.0.0.1:9010 embeddings).
+#
+# ⚠ WARNING: `network_mode: host` shares the host network with the container.
+# Only use this on a trusted host where the RAG service truly binds loopback,
+# and keep `DASHBOARD_HOST=127.0.0.1` inside the app. Prefer bridge networking
+# whenever the RAG service can be reached another way.
+#
+# Do not run this publicly as-is. An authenticated reverse proxy must sit in
+# front (e.g. nginx Basic Auth on the host).
+
+services:
+  rag-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-dashboard:prod
+    container_name: rag-dashboard
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_HOST: "127.0.0.1" # host networking: bind loopback only
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - rag_dash_data:/var/lib/rag-console
+      # read-only real benchmark artifacts (files mode)
+      - /srv/rag/docs:/app/benchmark-results:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4173/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  rag_dash_data:
